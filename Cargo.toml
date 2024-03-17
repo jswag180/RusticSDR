@@ -1,0 +1,17 @@
+[package]
+name = "rusticSDR"
+version = "0.1.0"
+edition = "2021"
+lto = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+iced = {version = "0.12.1", features = ["async-std", "canvas"]}
+plotters-iced = "0.10.0"
+plotters="0.3"
+rustfft = "6.2.0"
+soapysdr = "=0.4.0"
+ringbuf = "0.3.3"
+hound = "3.5.1"
+chrono = "0.4.35"
