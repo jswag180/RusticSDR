@@ -7,6 +7,7 @@ edition = "2021"
 
 [profile.release]
 lto = true
+codegen-units = 1
 
 [dependencies]
 iced = {version = "0.12.1", features = ["async-std", "canvas"]}
