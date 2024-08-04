@@ -10,11 +10,11 @@ lto = true
 codegen-units = 1
 
 [dependencies]
-iced = {version = "0.12.1", features = ["async-std", "canvas"]}
+iced = {version = "0.12.1", features = ["async-std", "canvas", "image"]}
+iced_aw = { version = "0.9.3", default-features = false, features = ["menu", "quad"] }
 plotters-iced = "0.10.0"
 plotters="0.3"
-rustfft = "6.2.0"
-soapysdr = "=0.4.0"
-ringbuf = "0.3.3"
 hound = "3.5.1"
 chrono = "0.4.35"
+futuresdr = { git = "https://github.com/FutureSDR/FutureSDR", rev = "f8fba06", features=["soapy", "rtlsdr"] }
+colorgrad = "0.6.2"
