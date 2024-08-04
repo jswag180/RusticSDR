@@ -316,7 +316,7 @@ impl Sdr {
     }
 
     pub fn set_freq(&mut self, freq: Freq) -> Result<(), SdrError> {
-        if self.limits.freq_range.contains(freq.get_hz()) {
+        if !self.limits.freq_range.contains(freq.get_hz()) {
             return core::result::Result::Err(SdrError::FreqNotInRange);
         }
 
