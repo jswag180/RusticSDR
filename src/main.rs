@@ -1,6 +1,8 @@
 use baseband_sink::BaseBandSpec;
 use iced::theme::Palette;
-use iced::widget::{button, column, container, pick_list, row, slider, text, text_input, toggler};
+use iced::widget::{
+    button, column, container, pick_list, radio, row, slider, text, text_input, toggler,
+};
 use iced::{executor, Background, Color, Padding};
 use iced::{Application, Command, Element, Length, Settings, Subscription, Theme};
 
@@ -20,7 +22,7 @@ mod waterfall;
 
 mod utills;
 use utills::*;
-use waterfall::WaterFall;
+use waterfall::{Pallet, WaterFall};
 
 const FFT_AMMOUNT: usize = 4096;
 const STARTING_FREQ_IN_HZ: f64 = 100_000_000.0;
@@ -63,6 +65,7 @@ pub enum Message {
     WindowResize((u32, u32)),
     FftAvgChanged(usize),
     FftRateChanged(usize),
+    ColorPallet(Pallet),
 }
 
 fn get_sdr_names() -> Vec<String> {
@@ -123,6 +126,7 @@ impl Application for RustcSdrSate {
 
     fn view(&self) -> Element<Message> {
         let menu_tpl_1 = |items| Menu::new(items).max_width(180.0).offset(10.0).spacing(5.0);
+        let menu_sub = |items| Menu::new(items).max_width(180.0).offset(0.0).spacing(5.0);
         let mb = menu_bar!((
             text("FFT Settings"),
             menu_tpl_1(menu_items!((row!(
@@ -153,7 +157,56 @@ impl Application for RustcSdrSate {
                     self.chart.fft_min,
                     Message::FftMinChanged
                 )
-            ))))
+            ))(
+                row!(
+                    text("Pallet")
+                        .horizontal_alignment(iced::alignment::Horizontal::Center)
+                        .width(Length::Fill),
+                    text("> ").horizontal_alignment(iced::alignment::Horizontal::Right)
+                )
+                .align_items(iced::Alignment::Center),
+                menu_sub(menu_items!(
+                    (column![
+                        radio(
+                            "Turbo",
+                            Pallet::Turbo,
+                            Some(self.waterfall.pallet),
+                            Message::ColorPallet
+                        )
+                        .size(15),
+                        radio(
+                            "Magma",
+                            Pallet::Magma,
+                            Some(self.waterfall.pallet),
+                            Message::ColorPallet
+                        )
+                        .size(15),
+                        radio(
+                            "Plasma",
+                            Pallet::Plasma,
+                            Some(self.waterfall.pallet),
+                            Message::ColorPallet
+                        )
+                        .size(15),
+                        radio(
+                            "Spectral",
+                            Pallet::Spectral,
+                            Some(self.waterfall.pallet),
+                            Message::ColorPallet
+                        )
+                        .size(15),
+                        radio(
+                            "Rainbow",
+                            Pallet::Rainbow,
+                            Some(self.waterfall.pallet),
+                            Message::ColorPallet
+                        )
+                        .size(15),
+                    ]
+                    .width(Length::Fill)
+                    .padding(2))
+                ))
+            )))
         ))
         .draw_path(menu::DrawPath::Backdrop)
         .style(|theme: &iced::Theme| {
@@ -438,6 +491,9 @@ impl Application for RustcSdrSate {
                         panic!("Invalid FftRateChanged message {:?}", ammount);
                     }
                 }
+            }
+            Message::ColorPallet(pallet) => {
+                self.waterfall.pallet = pallet;
             }
         }
 
