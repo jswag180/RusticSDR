@@ -1,37 +1,32 @@
+use baseband_sink::BaseBandSpec;
 use iced::theme::Palette;
-use iced::widget::{button, column, container, pick_list, row, slider, text, text_input, toggler};
-use iced::{executor, Color};
+use iced::widget::{
+    button, column, container, pick_list, radio, row, slider, text, text_input, toggler,
+};
+use iced::{executor, Background, Color, Padding};
 use iced::{Application, Command, Element, Length, Settings, Subscription, Theme};
-use rustfft::num_complex::ComplexFloat;
-use rustfft::num_traits::Pow;
-use std::sync::Arc;
+
+mod baseband_sink;
+mod sdr_device;
+mod tail_sink;
 
 mod sdr;
+use iced_aw::menu::{self, Item, Menu, StyleSheet};
+use iced_aw::{menu_bar, menu_items};
 use sdr::*;
 
 mod freq_chart;
 use freq_chart::*;
 
+mod waterfall;
+
 mod utills;
 use utills::*;
+use waterfall::{Pallet, WaterFall};
 
-const FFT_AMMOUNT: usize = 1024;
+const FFT_AMMOUNT: usize = 4096;
 const STARTING_FREQ_IN_HZ: f64 = 100_000_000.0;
-const FPS: u64 = 60;
-
-struct FftDsp {
-    planner: rustfft::FftPlanner<f32>,
-    fft: Arc<dyn rustfft::Fft<f32>>,
-}
-
-impl FftDsp {
-    pub fn new(fft_size: usize) -> Self {
-        let mut planner = rustfft::FftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(fft_size);
-
-        FftDsp { planner, fft }
-    }
-}
+const UPS: u64 = 60;
 
 struct RustcSdrSate {
     sdr_running: ToggleOption,
@@ -40,6 +35,8 @@ struct RustcSdrSate {
     recording: ToggleOption,
     sdr: Option<Sdr>,
 
+    fft_update_rate: u64,
+    fft_avg_num: usize,
     center_freq_val: Freq,
     center_freq: String,
     freq_unit: FreqUnits,
@@ -48,7 +45,8 @@ struct RustcSdrSate {
     sammple_rate: SampleRates,
 
     chart: FreqChart,
-    fft: FftDsp,
+
+    waterfall: WaterFall,
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +62,19 @@ pub enum Message {
     SammpleRate(SampleRates),
     FftMaxChanged(f32),
     FftMinChanged(f32),
+    WindowResize((u32, u32)),
+    FftAvgChanged(usize),
+    FftRateChanged(usize),
+    ColorPallet(Pallet),
+}
+
+fn get_sdr_names() -> Vec<String> {
+    let mut avalibale_sdrs: Vec<String> = Vec::new();
+    for (idx, dev) in sdr_device::get_devices().unwrap().iter().enumerate() {
+        avalibale_sdrs.push(idx.to_string() + " | " + &sdr_device::get_name(dev));
+    }
+
+    avalibale_sdrs
 }
 
 impl Application for RustcSdrSate {
@@ -73,7 +84,7 @@ impl Application for RustcSdrSate {
     type Theme = Theme;
 
     fn new(_flags: ()) -> (RustcSdrSate, Command<Self::Message>) {
-        let avalibale_sdrs: Vec<String> = Sdr::get_sdrs();
+        let avalibale_sdrs = get_sdr_names();
 
         (
             RustcSdrSate {
@@ -92,15 +103,18 @@ impl Application for RustcSdrSate {
                 },
                 sdr: None,
 
+                fft_update_rate: UPS,
+                fft_avg_num: 10,
                 center_freq_val: Freq::new(STARTING_FREQ_IN_HZ),
-                center_freq: "100000000.0".into(),
+                center_freq: STARTING_FREQ_IN_HZ.to_string(),
                 freq_unit: FreqUnits::Hz,
                 gain: 0.0,
                 sammple_rate_val: Freq::new(250_000f64),
                 sammple_rate: SampleRates::S250k,
 
                 chart: FreqChart::new(),
-                fft: FftDsp::new(FFT_AMMOUNT),
+
+                waterfall: WaterFall::new(),
             },
             Command::none(),
         )
@@ -111,6 +125,103 @@ impl Application for RustcSdrSate {
     }
 
     fn view(&self) -> Element<Message> {
+        let menu_tpl_1 = |items| Menu::new(items).max_width(180.0).offset(10.0).spacing(5.0);
+        let menu_sub = |items| Menu::new(items).max_width(180.0).offset(0.0).spacing(5.0);
+        let mb = menu_bar!((
+            text("FFT Settings"),
+            menu_tpl_1(menu_items!((row!(
+                text("Average Num "),
+                button(text("<")).on_press(Message::FftAvgChanged(0)),
+                container(text(self.fft_avg_num.to_string())).padding(2),
+                button(text(">")).on_press(Message::FftAvgChanged(1))
+            )
+            .align_items(iced::Alignment::Center))(
+                row!(
+                    text("Update Rate "),
+                    button(text("<")).on_press(Message::FftRateChanged(0)),
+                    container(text(self.fft_update_rate.to_string())).padding(2),
+                    button(text(">")).on_press(Message::FftRateChanged(1))
+                )
+                .align_items(iced::Alignment::Center)
+            )(row!(
+                text("FFT Max "),
+                slider(
+                    std::ops::RangeInclusive::new(-125.0, 150.0),
+                    self.chart.fft_max,
+                    Message::FftMaxChanged
+                )
+            ))(row!(
+                text("FFT Min "),
+                slider(
+                    std::ops::RangeInclusive::new(-125.0, 150.0),
+                    self.chart.fft_min,
+                    Message::FftMinChanged
+                )
+            ))(
+                row!(
+                    text("Pallet")
+                        .horizontal_alignment(iced::alignment::Horizontal::Center)
+                        .width(Length::Fill),
+                    text("> ").horizontal_alignment(iced::alignment::Horizontal::Right)
+                )
+                .align_items(iced::Alignment::Center),
+                menu_sub(menu_items!(
+                    (column![
+                        radio(
+                            "Turbo",
+                            Pallet::Turbo,
+                            Some(self.waterfall.pallet),
+                            Message::ColorPallet
+                        )
+                        .size(15),
+                        radio(
+                            "Magma",
+                            Pallet::Magma,
+                            Some(self.waterfall.pallet),
+                            Message::ColorPallet
+                        )
+                        .size(15),
+                        radio(
+                            "Plasma",
+                            Pallet::Plasma,
+                            Some(self.waterfall.pallet),
+                            Message::ColorPallet
+                        )
+                        .size(15),
+                        radio(
+                            "Spectral",
+                            Pallet::Spectral,
+                            Some(self.waterfall.pallet),
+                            Message::ColorPallet
+                        )
+                        .size(15),
+                        radio(
+                            "Rainbow",
+                            Pallet::Rainbow,
+                            Some(self.waterfall.pallet),
+                            Message::ColorPallet
+                        )
+                        .size(15),
+                    ]
+                    .width(Length::Fill)
+                    .padding(2))
+                ))
+            )))
+        ))
+        .draw_path(menu::DrawPath::Backdrop)
+        .style(|theme: &iced::Theme| {
+            let mut menu_app = theme.appearance(&Default::default());
+            let mut menu_color = theme.palette().background;
+            menu_color.r += 0.05;
+            menu_color.g += 0.05;
+            menu_color.b += 0.05;
+            menu_app.menu_background = Background::Color(menu_color);
+            menu_app.bar_background = Background::Color(menu_color);
+
+            menu_app
+        });
+        let menus = row!(mb.width(Length::Fill)).align_items(iced::Alignment::Center);
+
         let freq_elements = container(row!(column![
             column![row!(
                 column![toggler(
@@ -139,7 +250,7 @@ impl Application for RustcSdrSate {
                 row!(
                     text("Gain: "),
                     slider(
-                        std::ops::RangeInclusive::new(0.0, 49.0),
+                        std::ops::RangeInclusive::new(0.0, 1000.0),
                         self.gain,
                         Message::ChangeGain
                     )
@@ -165,55 +276,46 @@ impl Application for RustcSdrSate {
             )
         ],));
 
-        let chart_elements = container(column![
-            row!(
-                row!(
-                    text("FFT Max: "),
-                    slider(
-                        std::ops::RangeInclusive::new(-125.0, 150.0),
-                        self.chart.fft_max,
-                        Message::FftMaxChanged
-                    )
-                )
-                .padding(5),
-                row!(
-                    text("FFT Min: "),
-                    slider(
-                        std::ops::RangeInclusive::new(-125.0, 150.0),
-                        self.chart.fft_min,
-                        Message::FftMinChanged
-                    )
-                )
-                .padding(5),
-            ),
-            self.chart.view(),
-        ]);
+        let chart_elements = container(column![self.chart.view(),]);
 
-        column![freq_elements, chart_elements,].into()
+        column![
+            menus,
+            freq_elements.padding(Padding {
+                top: 10.0,
+                bottom: 0.0,
+                left: 0.0,
+                right: 0.0
+            }),
+            chart_elements,
+            self.waterfall.view()
+        ]
+        .into()
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
         match message {
             Message::Tick => {
                 if let Some(dev) = self.sdr.as_mut() {
-                    if let Ok(mut sample) = dev.get_preview_smaple() {
-                        self.fft.fft.process(&mut sample);
-                        for i in 0..self.chart.vals.len() {
-                            let mut index = i;
-                            if (i / (FFT_AMMOUNT / 2)) == 0 {
-                                index += FFT_AMMOUNT / 2;
-                            } else {
-                                index -= FFT_AMMOUNT / 2;
-                            }
-                            let psd_log = 10.0
-                                * f32::log10(
-                                    sample[index].pow(2.0).abs()
-                                        / (FFT_AMMOUNT as f32
-                                            / self.sammple_rate_val.get_hz() as f32)
-                                        + 1.0, //This +1.0 is need to stop (over/under)flows on debug
-                                );
-                            self.chart.vals[i] = psd_log;
+                    if let Ok(sample) = dev.get_preview_smaple() {
+                        for (idx, val) in sample.iter().enumerate() {
+                            self.chart.vals[idx] = *val;
                         }
+
+                        self.waterfall
+                            .add_line(&sample, self.chart.fft_max, self.chart.fft_min);
+                    }
+
+                    if self.recording.toggled {
+                        let secs = dev.get_record_duration().unwrap() as u32;
+                        let hours = secs / (60 * 60);
+                        let sec_left = secs - (hours * 60 * 60);
+                        let time = format!(
+                            "Recording: {:02}:{:02}:{:02}",
+                            hours,
+                            sec_left / 60,
+                            sec_left % 60
+                        );
+                        self.recording.label = Some(time);
                     }
                 }
             }
@@ -230,10 +332,22 @@ impl Application for RustcSdrSate {
             Message::ToggleRecord(toggle) => {
                 if let Some(dev) = self.sdr.as_mut() {
                     if toggle {
-                        dev.toggle_recording();
+                        dev.toggle_recording(
+                            BaseBandSpec {
+                                format: baseband_sink::BaseBandFormat::i16,
+                                sample_rate: self.sammple_rate_val.get_hz() as u32,
+                            },
+                            &self.center_freq_val,
+                        );
                         self.recording.toggled = true;
                     } else {
-                        dev.toggle_recording();
+                        dev.toggle_recording(
+                            BaseBandSpec {
+                                format: baseband_sink::BaseBandFormat::i16,
+                                sample_rate: self.sammple_rate_val.get_hz() as u32,
+                            },
+                            &self.center_freq_val,
+                        );
                         self.recording.toggled = false;
                     }
                 }
@@ -246,16 +360,22 @@ impl Application for RustcSdrSate {
                         FreqUnits::MHz => self.center_freq_val.set_mhz(new_freq),
                         FreqUnits::GHz => self.center_freq_val.set_ghz(new_freq),
                     }
-                    if let Some(dev) = self.sdr.as_ref() {
-                        dev.set_freq(self.center_freq_val.clone());
+                    if let Some(dev) = self.sdr.as_mut() {
+                        let _ = dev.set_freq(self.center_freq_val.clone());
                     }
                 }
                 self.center_freq = new_freq_str;
             }
             Message::ToggleSdr(toggle) => {
-                if let Some(dev) = self.sdr.as_ref() {
+                if let Some(dev) = self.sdr.as_mut() {
                     if self.recording.toggled {
-                        dev.toggle_recording();
+                        dev.toggle_recording(
+                            BaseBandSpec {
+                                format: baseband_sink::BaseBandFormat::i16,
+                                sample_rate: self.sammple_rate_val.get_hz() as u32,
+                            },
+                            &self.center_freq_val,
+                        );
                         self.recording.toggled = false;
                     }
 
@@ -272,10 +392,11 @@ impl Application for RustcSdrSate {
                             .unwrap();
 
                         self.sdr = Some(Sdr::new(
-                            dev_num,
+                            &sdr_device::get_devices().unwrap()[dev_num],
                             self.center_freq_val.clone(),
                             self.sammple_rate_val.clone(),
                             self.gain,
+                            self.fft_avg_num,
                         ));
                     } else {
                         return Command::none();
@@ -290,7 +411,7 @@ impl Application for RustcSdrSate {
                 }
             }
             Message::RefreshSdrs => {
-                self.avalibale_sdrs = Sdr::get_sdrs();
+                self.avalibale_sdrs = get_sdr_names();
                 self.selected_sdr = self
                     .avalibale_sdrs
                     .first()
@@ -330,13 +451,68 @@ impl Application for RustcSdrSate {
             Message::FftMinChanged(new_min) => {
                 self.chart.fft_min = new_min;
             }
+            Message::WindowResize((_width, height)) => {
+                self.waterfall.height = height as usize;
+            }
+            Message::FftAvgChanged(ammount) => {
+                match ammount {
+                    //sub
+                    0 => {
+                        if self.fft_avg_num > 1 {
+                            self.fft_avg_num -= 1;
+                        }
+                    }
+                    //add
+                    1 => {
+                        self.fft_avg_num += 1;
+                    }
+                    _ => {
+                        panic!("Invalid FftAvgChanged message {:?}", ammount);
+                    }
+                }
+
+                if let Some(dev) = self.sdr.as_ref() {
+                    dev.set_fft_avg(self.fft_avg_num);
+                }
+            }
+            Message::FftRateChanged(ammount) => {
+                match ammount {
+                    //sub
+                    0 => {
+                        if self.fft_update_rate > 1 {
+                            self.fft_update_rate -= 1;
+                        }
+                    }
+                    //add
+                    1 => {
+                        self.fft_update_rate += 1;
+                    }
+                    _ => {
+                        panic!("Invalid FftRateChanged message {:?}", ammount);
+                    }
+                }
+            }
+            Message::ColorPallet(pallet) => {
+                self.waterfall.pallet = pallet;
+            }
         }
 
         Command::none()
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        iced::time::every(iced::time::Duration::from_millis(1000 / FPS)).map(|_| Message::Tick)
+        let tick = iced::time::every(iced::time::Duration::from_millis(
+            1000 / self.fft_update_rate,
+        ))
+        .map(|_| Message::Tick);
+        let event = iced::event::listen_with(|event, _| match event {
+            iced::Event::Window(_, iced::window::Event::Resized { width, height }) => {
+                Some(Message::WindowResize((width, height)))
+            }
+            _ => None,
+        });
+
+        Subscription::batch(vec![tick, event])
     }
 
     fn theme(&self) -> Self::Theme {
